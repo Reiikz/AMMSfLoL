@@ -13,6 +13,15 @@ It ensures to run the server as the user that is setup in the configuration, alt
 
 ## Usage
 AMM_Sf_LoL demonize  # starts the server and periodically saves the server and dumps the ramdisk as well as growing the ramdisk if need be and enough ram
+
+
+
 AMM_Sf_LoL start     # starts the server
+
+
+
 AMM_Sf_LoL stop      # stops a server that has been run with either start or demonize, it closes the server, dumps the ramdisk and unmounts it
+
+
+
 AMM_Sf_LoL help
