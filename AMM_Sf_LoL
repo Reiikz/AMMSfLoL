@@ -113,7 +113,7 @@ SAVING_INTERVAL=1200
 AUTO_SAVE_MODE=RAW
 
 #set this to 1 once you have setup all the configuration
-READY_TO_USE=1
+READY_TO_USE=0
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Configuration ends here
 
