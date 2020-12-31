@@ -113,7 +113,7 @@ SAVING_INTERVAL=1200
 AUTO_SAVE_MODE=RAW
 
 #set this to 1 once you have setup all the configuration
-READY_TO_USE=0
+READY_TO_USE=1
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Configuration ends here
 
@@ -403,14 +403,18 @@ function checkAndGrowRamdisk {
 							if [ "$REPORT_WARNINGS" == "1" ]; then
 								say "I am $MY_NAME, I failed to resize RAMDISK with new size of: $newcsize_, server's currently running out of space"
 								say "please logout or report this issue to the admins, in feature versions of $MY_NAME this will cause a server restart"
-								say "and start running otside a ramdisk"
+								say "and start running outside a RAMDISK"
 							fi
 							log "failed to resize RAMDISK with new size of: $newcsize_"
 						fi
 
 					else
-
-						log "Ramdisk growth by $growth was impossible due available ram being: $available"
+						if [ "$REPORT_WARNINGS" == "1" ]; then
+							say "I am $MY_NAME, RAMDISK growth by $growth was impossible due available ram being: $available"
+							say "please logout or report this issue to the admins, in feature versions of $MY_NAME this will cause a server restart"
+							say "and start running outside a RAMDISK"
+						fi
+						log "RAMDISK growth by $growth was impossible due available ram being: $available"
 
 					fi
 

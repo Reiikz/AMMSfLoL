@@ -1,0 +1,12 @@
+[Unit]
+Description=Minecraft Server
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/AMM_Sf_LoL demonize
+ExecStop=/usr/local/bin/AMM_Sf_LoL stop
+User=root
+Group=root
+Restart=always
