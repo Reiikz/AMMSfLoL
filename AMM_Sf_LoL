@@ -1,0 +1,567 @@
+#!/bin/bash
+
+# Begin license text.
+#
+# Copyright 2020 https://github.com/Reiikz
+#
+# Permission is hereby granted, free of charge,
+# to any person obtaining a copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# 
+# End license text.
+
+#  AMM Sf LoL (Awesome Minecraft Manager Service for Linux or Linux)
+#  Service made in bash, meant for the easy setup of minecraft servers as system services by the use of systemd
+
+VERSION=0.0.1
+MY_NAME="AMM Sf LoL"
+SOURCE="https://github.com/Reiikz/AMMSfLoL"
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Configuration starts here
+
+#RAMDISK SIZE MULTIPLIER
+#this is the growth added to the ramdisk once capacity is met
+#by default is 1.2 so the ram used by the server's map grows by 20%
+#this means the script will automatically start up with a ramdisk of 120% the disk used by the server if set to 1.2
+RAMDSIK_SIZE_MUL=1.2
+
+#the minimum free space reduction on the ramdisk the script will wait for before growing it
+#the default settijng is .1
+#this means that with default settings the ramdisk will remain 120% the size of the server when it first starts
+#until the free space becomes less or equal to 10% the current size of the server, then it will automatically grow to
+#be 120% the current size of the server, if enough ram is available otherwise it will be set to whatever the detected
+#maximum growth is and show a warning
+#not that decimal points are ignored so this is precise up to aproximately +-0.99%
+LOWER_MARGINAL_PERCENTAGE=.1
+
+#FREE RAM LIMIT (KiB)
+#How much ram should be left after mounting the ramdisk.
+#This number will be used to calculate if it is adecuate for the script to use a ramdisk
+#depending on the current free ram during start up.
+#It is recomended to leave this as the ram required by your server + a margin for other apps to function,
+#for example if your server is set to use 4096000 KiB (4GB) it would be sensible to set this as 5120000 KiB (5GB)
+#so your system doesn't drop the stack or starts to use the swap way too much therefore slowing everything down
+FREE_RAM_LIMIT=5120000
+
+#UPPER FREE RAM LIMIT
+#Same as the previous one but defines the limit after the server is running, meaning
+#that it will not grow the RAMDISK if the resulting size will occupy enough ram to reduce the free ram
+#close to this limit, once reached a warning will be shown and the server might become unstable if there's not enough space
+#for it to grow the map. Keep in mind growth is percentage based so if the ram amount is already pretty large this warning may
+#be meaningless
+UPPER_FREE_RAM_LIMIT=2000
+
+#RAMDISK TYPE
+#valid types;
+#tmpfs         - grows with the available ram then the swap files and can be limited in size
+#ramfs         - doesn't erase files from the caching system and overrides filesize limits, can not be limited in size
+RAMDISK_TYPE=tmpfs
+
+#Time to wait for the server to close, after this time (in seconds) is met, the server will be forcefully terminated
+TIMEOUT=30
+
+#time in seconds for which the service will remain sleeping while the server is running
+#this defines how often the service will check if the server is alive and if it needs to add memory
+SLEEP=120
+
+#the name of the screen the server will be run on
+SCREEN_NAME=mainkra_mods
+
+#the origin folder of the server
+ORIGIN=
+
+#log folder location (a folder with this address will be created)
+SERVICE_LOG=$ORIGIN.servicelog
+
+#location of the ramdisk the server will be copied to
+WORKING_DIR=$ORIGIN.rd
+
+#the user that the server will run under
+USER="minecraft"
+
+#0, 1; weather or not the script will report saving and backup procedures to the players, 1 is yes, 0 is no
+REPORT_STATUS=1
+
+#0, 1; weather or not the script will report warnings about the server to the players, 1 is yes, 0 is no
+REPORT_WARNINGS=1
+
+#SAVING METHOD
+#method through which the ramdisk is backed up
+#valid options;
+#RAW     - runs cp -R
+SAVING_METHOD=RAW
+
+#SAVING INTERVAL (seconds)
+SAVING_INTERVAL=1200
+
+#AUTO SAVE MODE
+#valid options;
+#AUTO			stops minecraft autosave on ramdisk backup
+#AUTO-FORCE		stops minecraft autosave on ramdisk backup and preforms a save-all beforehand
+#RAW			stops minecraft autosave on server launch and performs a save-all before ramdisk backup
+AUTO_SAVE_MODE=RAW
+
+#set this to 1 once you have setup all the configuration
+READY_TO_USE=0
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Configuration ends here
+
+
+#check permissions
+if [ "$(whoami)" != "$USER" ]; then
+	USER_OVERRIDE="sudo -u $USER"
+fi
+if [ -z "$SUDO_COMMAND" ] && [ "$(whoami)" != "root" ]; then
+	echo -e "\e[1m\e[31mYou need root permission to run this script, and should be using it through systemctl if you are trying to start/stop/restart the server"
+	exit 0
+fi
+
+#do not run if no action specified
+[ $# -lt 1 ] && echo "no option given" && exit 1
+
+################################ lazyness maximus
+function logTimeFormat {
+	echo -n "[$(date "+%H:%m:%S")]:"
+}
+
+function timestamp {
+	echo -n "$(date "+%s")"
+}
+
+function day {
+	echo -n "$(date "+%d")"
+}
+
+function today {
+	echo -n "$(date "+%d-%m-%Y")"
+}
+
+function getHomeByLogin {
+	echo -n "$(getent passwd $USER | cut -d':' -f6)"
+}
+
+################################ LOG FUNCTIONS
+
+function newLogDay {
+	echo "DAY=\"$(day)\"" > $SERVICE_LOG/.work
+	echo "TODAY=\"$(today)\"" >> $SERVICE_LOG/.work
+	chmod 700 $SERVICE_LOG/.work
+	source $SERVICE_LOG/.work
+}
+
+function log {
+	if [ ! -d $SERVICE_LOG ]; then
+		rm -rf $SERVICE_LOG
+		mkdir -p $SERVICE_LOG
+		newLogDay
+	elif [ -z "$DAY" ]; then
+		source $SERVICE_LOG/.work
+	fi
+	if [ "$DAY" != "$(day)" ] && [ -e "$SERVICE_LOG/latest.log" ]; then
+		mv $SERVICE_LOG/latest.log $SERVICE_LOG/old-$TODAY.log
+		newLogDay
+		echo -n "" > $SERVICE_LOG/latest.log
+	fi
+	echo "$(logTimeFormat) $1" >> "$SERVICE_LOG/latest.log"
+}
+
+####################################################################
+
+################################ SCREEN FUNCTIONS
+function killScreen {
+	log "[$1]: terminated"
+	$USER_OVERRIDE screen -X -S $($USER_OVERRIDE screen -ls | grep -oE "[0-9]+\.$1" | sed -e "s/\..*$//g") kill
+}
+
+function sendEnter {
+	log "[$1]: Sent Enter"
+	$USER_OVERRIDE screen -S   $1 -p 0 -X stuff "^M"
+}
+
+function sendCommand {
+	log "[$1]: Sent \"$2\""
+	$USER_OVERRIDE screen -S   $1 -p 0 -X stuff "$2^M"
+}
+
+function loadEnv {
+	log "[$1]: Loaded Environment variables from: $2"
+	sendCommand $1 "source $2"
+}
+
+function isScreen {
+	echo "$($USER_OVERRIDE screen -ls | grep -oE "[0-9]+\.$1" | sed -e "s/\..*$//g")"
+}
+
+function killTimeout {
+	log "[$1]: kill timeout set $2"
+	start=$(timestamp)
+	while [ ! -z $(isScreen $1) ] && [ $(( $(timestamp) - $start )) -lt $2 ]; do
+		sleep 1;
+	done
+	if [ $(( $(timestamp) - $start )) -ge $2 ]; then
+		log "[$1]: kill timeout reached, terminating screen"
+		killScreen $1
+	else
+		log "[$1]: has stopped safely"
+	fi
+	unset start
+}
+
+function runScreen {
+	if [ ! -z "$(isScreen $SCREEN_NAME)" ]; then
+		log "Screen was already present"
+		killScreen $SCREEN_NAME
+	fi
+	log "Demonized screen $SCREEN_NAME"
+	$USER_OVERRIDE screen -dmS $SCREEN_NAME
+}
+
+#usage; waitUntilRgex "screen" "rexex" "timeout in seconds"
+function waitUntilRgex {
+	log "[$1]: waiting for: '$2' timing out in: $3s"
+	start=$(date "+%s")
+	$USER_OVERRIDE screen -S   $1 -p 0 -X hardcopy "/tmp/$1.screen"
+	term=$(cat /tmp/$1.screen)
+	while [ -z "$(grep -oE "$2" <<< $term)" ]; do
+		$USER_OVERRIDE screen -S   $1 -p 0 -X hardcopy "/tmp/$1.screen"
+		term=$(cat /tmp/$1.screen)
+		sleep 1
+		if [ $(( $(date "+%s") - $start )) -ge $3 ]; then
+			return 1
+		fi
+	done
+	rm /tmp/$1.screen
+	return 0
+}
+
+####################################################################
+
+################################ MINECRAFT FUNCTIONS
+
+function save-on {
+	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "save-on"
+}
+
+function save-off {
+	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "save-off"
+}
+
+function save-all {
+	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "save-all"
+}
+
+function stop-command {
+	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "stop"
+}
+
+function say {
+	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "say $1"
+}
+
+####################################################################
+
+################################ DISK FUNCTIONS
+
+function folderSizeKiB {
+	echo -n "$(du --si -sk $1 | grep -oE "^[0-9]+")"
+}
+
+function growByPercentage {
+	echo -n $(bc <<< $1*$2 | grep -oE "^[0-9]+")
+}
+
+function getGrownSize {
+	echo -n $(growByPercentage $(folderSizeKiB $1) $2)
+}
+
+####################################################################
+
+
+################################ RAMDISK FUNCTIONS
+
+#usage saveRamdisk <origin file> <ramdisk location> <saving method>
+function saveRamdisk {
+	log "Performing save of ramdisk $2"
+	case $3 in
+		RAW)
+			if [ -e "$1.1" ]; then
+				mv $1.1 $1.old-back
+			fi
+			mv $1 $1.1
+			if cp -R $2 $1; then
+				log "Successfully copied $2 to $1"
+				rm -rf $1.old-back
+			else
+				log "Failed to save Ramdisk $2 to $1, reverting old $1"
+				rm -rf $1
+				mv $1.1 $1
+				mv $1.old-back $1.1
+			fi
+		;;
+
+		*)
+			log "$3 is an unknown saving method, nothig done"
+		;;
+	esac
+	chown -R $USER:$USER $ORIGIN*
+}
+
+# usage maxRamdiskSize <minimum reaming free ram after mount>
+function maxRamdiskSize {
+	MXRDS=$(( $(free --kibi | grep Mem | sed -E "s/.*\s//g") - $1 ))
+	if [ $MXRDS -lt 0 ]; then MXRDS=0; fi
+	echo -n "$MXRDS"
+}
+
+function umountIfPresent {
+	if [ ! -z "$(mount | grep -E "(ramfs|tmpfs)" | grep $1)" ]; then
+		if umount $1; then
+			log "successfully unmounted previously mounted $1"
+			rmdir $1 2> /dev/null
+		fi
+	else
+		log "tried to unmount a non existant ramdisk located at $1"
+	fi
+}
+
+#usage attemptMountOnRamdisk <origin> <size growth> <destiny> <type> <ram that must remain after filling ramdisk>
+#this function falls into making a copy instead of a ramdisk in case of not enough ram being available
+function attemptMountOnRamdisk {
+
+	umountIfPresent $3
+
+	#get the grown size of the folder
+	CURRENT_SIZE=$(getGrownSize $1 $2)
+	AVAILABLE_MEMORY=$(maxRamdiskSize $5)
+
+	#check available memory with a limit
+	if [ $CURRENT_SIZE -ge $AVAILABLE_MEMORY ]; then
+		#if not enogh ram make a copy on disk and work there
+		log "Available Memory $AVAILABLE_MEMORY, Required Size $CURRENT_SIZE, skipping ramdisk and copying files disk to disk instead"
+		rm -rf $3
+		cp -R $1 $3
+		echo "TYPE=\"FOLDER\"" >> $3/.rdmeta
+	else
+		#if enough ram
+		rm -rf $3
+		mkdir -p $3
+		s=$(echo "$CURRENT_SIZE"k)
+		log "$AVAILABLE_MEMORY KiB are available for RAMDISK reamaining $5 KiB for system usage, required size is $CURRENT_SIZE KiB"
+		if mount -t $4 -o size=$s $4 $3; then
+			echo "TYPE=\"$4\"" > $3/.rdmeta
+			echo "CURRENT_SIZE=\"$CURRENT_SIZE\"" >> $3/.rdmeta
+			chmod 700 "$3/.rdmeta"
+			log "RAMDISK succesfully created with a size of $s"
+			cp -R $1/* $3
+		else
+			log "Could not mount RAMDISK"
+		fi
+		unset s
+	fi
+	chown -R $USER:$USER $3
+}
+
+#usage checkAndGrowRamdisk <ramdisk location> <percent growth> <lowerlimit> <freeramlimit>
+function checkAndGrowRamdisk {
+	if [ -e "$1/.rdmeta" ]; then
+		source "$1/.rdmeta"
+		
+		if [ ! -e $1 ]; then
+			log "requested growth of $1 which is not a file or directory"
+		else
+			if [ "$TYPE" == "tmpfs" ]; then
+				log "Requested growth/check of $1"
+
+				csize="$(folderSizeKiB $1)"
+				available=$(maxRamdiskSize $4)
+
+				if [ $(($CURRENT_SIZE - $csize)) -lt $(bc <<< $CURRENT_SIZE*$3 | grep -oE "^[0-9]+") ]; then
+					newcsize=$(getGrownSize $1 $2)
+					growth=$(( $newcsize - $csize ))
+					log "Growth is required, folder: $csize, available space: $available, new size will be: $newcsize"
+
+					if [ $growth -le $available ]; then
+						newcsize_="$(echo "$newcsize"k)"
+
+						if mount -o remount,size=$newcsize_ $WORKING_DIR; then
+							log "successfully resized RAMDISK with new size of: $newcsize_"
+							CURRENT_SIZE=$newcsize
+							echo "TYPE=\"$TYPE\"" > $WORKING_DIR/.rdmeta
+							echo "CURRENT_SIZE=\"$CURRENT_SIZE\"" >> $WORKING_DIR/.rdmeta
+						else
+							if [ "$REPORT_WARNINGS" == "1" ]; then
+								say "I am $MY_NAME, I failed to resize RAMDISK with new size of: $newcsize_, server's currently running out of space"
+								say "please logout or report this issue to the admins, in feature versions of $MY_NAME this will cause a server restart"
+								say "and start running otside a ramdisk"
+							fi
+							log "failed to resize RAMDISK with new size of: $newcsize_"
+						fi
+
+					else
+
+						log "Ramdisk growth by $growth was impossible due available ram being: $available"
+
+					fi
+
+				else
+					log "Growth is not required"
+				fi
+
+			else
+				log "requested growth of $1 which is of not growable type $TYPE, ommited"
+			fi
+		fi
+
+	else
+		log "Working directory $1, had a missing meta file when trying to grow fs, maybe it wasn't supposed to?"
+	fi
+}
+
+####################################################################
+
+
+#do stuff
+case $1 in
+	demonize)
+		if [ "$READY_TO_USE" != "1" ]; then
+			echo "please set up configuration -h for more information"
+			exit 0
+		fi
+
+		#call the start sequence
+		export DEMONIZED=1
+		$0 start
+		#check if the server is still up every minute so the script keeps hold of the prompt
+		#and systemd doesn't think is crashed, also will exit on server exit so systemd restarts
+		#the server
+		lastsave="$(timestamp)"
+		while [ ! -z "$(isScreen $SCREEN_NAME)" ] && [ ! -e "$SERVICE_LOG/.stopping" ]; do
+			sleep $SLEEP
+
+			checkAndGrowRamdisk "$WORKING_DIR" $RAMDSIK_SIZE_MUL $LOWER_MARGINAL_PERCENTAGE $UPPER_FREE_RAM_LIMIT
+
+			if [ $(( $(timestamp) - $lastsave )) -gt $SAVING_INTERVAL ]; then
+				if [ "$REPORT_STATUS" == "1" ]; then
+					say "I am $MY_NAME, I'm saving the server"
+				fi
+				if [ "$AUTO_SAVE_MODE" != "RAW" ]; then
+					save-off
+				fi
+				if [ "$AUTO_SAVE_MODE" == "RAW" ] || [ "$AUTO_SAVE_MODE" == "AUTO-FORCE" ]; then
+					save-all
+				fi
+				saveRamdisk $ORIGIN "$WORKING_DIR" $SAVING_METHOD
+				if [ "$AUTO_SAVE_MODE" != "RAW" ]; then
+					save-on
+				fi
+				lastsave="$(timestamp)"
+				if [ "$REPORT_STATUS" == "1" ]; then
+					say "I am $MY_NAME, I have saved the server"
+				fi
+			fi
+		done
+		if [ -e "$SERVICE_LOG/.stopping" ]; then
+			rm "$SERVICE_LOG/.stopping"
+			log "Serivice has been stopped safely."
+		else
+			log "Abrupt stop of server or stop function wasn't called properly, service has been stopped."
+		fi
+	;;
+
+	start)
+		if [ "$READY_TO_USE" != "1" ]; then
+			echo "please set up configuration -h for more information"
+			exit 0
+		fi
+
+		log "Server Start"
+		if [ ! -z $(isScreen $SCREEN_NAME) ]; then
+			log "$SCREEN_NAME found to be alive, Server may be running?"
+			exit 0
+		fi
+		
+		[ -e "$SERVICE_LOG/.stopping" ] && rm "$SERVICE_LOG/.stopping"
+		
+		#mount ramdisk
+		attemptMountOnRamdisk $ORIGIN $RAMDSIK_SIZE_MUL "$WORKING_DIR" $RAMDISK_TYPE $FREE_RAM_LIMIT
+
+		if [ ! -z "$DEMONIZED" ]; then
+			echo "$$" > "$WORKING_DIR/.service.pid"
+		fi
+
+		#start demonized screen
+		runScreen $SCREEN_NAME
+
+		#load bashrc
+		loadEnv $SCREEN_NAME "$(getHomeByLogin $USER)/.bashrc"
+
+		#get into the server working directory
+		sendCommand $SCREEN_NAME "cd $WORKING_DIR"
+
+		#run the server and concatenate an exit command so the screen closes on crash
+		sendCommand $SCREEN_NAME "./run ; exit"
+
+		if [ "$AUTO_SAVE_MODE" == "RAW" ]; then
+			waitUntilRgex $SCREEN_NAME "^.*(\\[minecraft\\/DedicatedServer\\]: Done).*$" 100
+			save-off
+		fi
+	;;
+
+	stop)
+		if [ "$READY_TO_USE" != "1" ]; then
+			echo "please set up configuration -h for more information"
+			exit 0
+		fi
+
+		if [ -z "$(isScreen $SCREEN_NAME)" ]; then
+			log "tried to stop server, but screen $SCREEN_NAME which was non existant. Already stopped?"
+			exit 0
+		fi
+		
+		echo "" > "$SERVICE_LOG/.stopping"
+
+		log "Requested server stop"
+		
+		save-off
+		
+		save-all
+
+		stop-command
+		
+		killTimeout $SCREEN_NAME $TIMEOUT
+
+		rm -rf $WORKING_DIR/.service.pid
+		saveRamdisk $ORIGIN $WORKING_DIR $SAVING_METHOD
+
+		umountIfPresent $WORKING_DIR
+	;;
+
+	about|-h|--help|-help|help|-v|--version|-version)
+		echo "$MY_NAME v$VERSION; Copyright 2020 https://github.com/Reiikz"
+		echo "Edit the script to setup config, use start/stop to start/stop the server, demonize to hold of the prompt until it closes and perform auto saves"
+		echo "to stop a demonized server or normal server use stop as you normally would with any server"
+		echo "if you're using systemd please use that instead, restart functionallity is meant to be provided by systemd"
+		echo "for an installation example check the repository below"
+		echo "Source code: $SOURCE"
+		echo "This software is published under: https://github.com/Reiikz/AMMSfLoL/blob/main/LICENSE"
+		exit 0
+	;;
+
+	*)
+		echo $1 unrecognized option
+		exit 1
+	;;
+
+esac
+
