@@ -88,7 +88,7 @@ SERVICE_LOG=$ORIGIN.servicelog
 WORKING_DIR=$ORIGIN.rd
 
 #the user that the server will run under
-USER="minecraft"
+USER="rafa"
 
 #0, 1; weather or not the script will report saving and backup procedures to the players, 1 is yes, 0 is no
 REPORT_STATUS=1
@@ -113,19 +113,36 @@ SAVING_INTERVAL=1200
 AUTO_SAVE_MODE=RAW
 
 #set this to 1 once you have setup all the configuration
-READY_TO_USE=1
+READY_TO_USE=0
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Configuration ends here
 
+
+# ENVIRONMENT DETECTION
+MY_LOCATION="$(realpath $0)"
 
 #check permissions
 if [ "$(whoami)" != "$USER" ]; then
 	USER_OVERRIDE="sudo -u $USER"
 fi
-if [ -z "$SUDO_COMMAND" ] && [ "$(whoami)" != "root" ]; then
-	echo -e "\e[1m\e[31mYou need root permission to run this script, and should be using it through systemctl if you are trying to start/stop/restart the server"
-	exit 0
-fi
+
+case $1 in
+
+	save)
+		if [ "$(whoami)" != "$USER" ] && [ -z "$SUDO_COMMAND" ] && [ "$(whoami)" != "root" ]; then
+			echo "you don't have tge propper permissions to run this command"
+			exit 0
+		fi
+	;;
+
+	*)
+		if [ -z "$SUDO_COMMAND" ] && [ "$(whoami)" != "root" ]; then
+			echo -e "\e[1m\e[31mYou need root permission to run this script, and should be using it through systemctl if you are trying to start/stop/restart the server"
+			exit 0
+		fi
+	;;
+
+esac
 
 #do not run if no action specified
 [ $# -lt 1 ] && echo "no option given" && exit 1
@@ -156,6 +173,7 @@ function getHomeByLogin {
 function newLogDay {
 	echo "DAY=\"$(day)\"" > $SERVICE_LOG/.work
 	echo "TODAY=\"$(today)\"" >> $SERVICE_LOG/.work
+	chown $USER:$USER $SERVICE_LOG/.work
 	chmod 700 $SERVICE_LOG/.work
 	source $SERVICE_LOG/.work
 }
@@ -172,8 +190,52 @@ function log {
 		mv $SERVICE_LOG/latest.log $SERVICE_LOG/old-$TODAY.log
 		newLogDay
 		echo -n "" > $SERVICE_LOG/latest.log
+		chown $USER:$USER $SERVICE_LOG/latest.log
 	fi
-	echo "$(logTimeFormat) $1" >> "$SERVICE_LOG/latest.log"
+	echo "[$$]-$(logTimeFormat) $1" >> "$SERVICE_LOG/latest.log"
+}
+
+####################################################################
+
+
+################################ Crude but useful utilities
+
+# riseCrudeLock "lockName"
+function riseCrudeLock {
+	file="$SERVICE_LOG/.$1"
+	if [ -e "$file" ]; then
+		source "$file"
+		if [ "$LOCKED_PID" == "$$" ]; then
+			rm "$file"
+			log "risen lock '$1'"
+			return 0
+		else
+			log "tried to rise lock '$1' from another process: $LOCKED_PID"
+			return 1
+		fi
+	else
+		log "tried to rise lock '$1' which was not present"
+		return 2
+	fi
+}
+
+# crudeLock "lockname" <timeout to get it>
+function crudeLock {
+	file="$SERVICE_LOG/.$1"
+	start=$(timestamp)
+	while [ $(( $(timestamp) - $start )) -lt $2 ]; do
+		if [ ! -e "$file" ]; then
+			echo "LOCKED_PID=\"$$\"" > "$file"
+			echo "LOCKED_FROM=\"$MY_LOCATION\"" >> "$file"
+			log "acquiered lock '$1'"
+			return 0
+		fi
+		sleep 1
+	done
+	if [ $(( $(timestamp) - $start )) -ge $2 ]; then
+		log "timed out after $2s while trying to acquire lock $1"
+		return 1
+	fi
 }
 
 ####################################################################
@@ -229,7 +291,7 @@ function runScreen {
 
 #usage; waitUntilRgex "screen" "rexex" "timeout in seconds"
 function waitUntilRgex {
-	log "[$1]: waiting for: '$2' timing out in: $3s"
+	log "[$1]: target: '$2' timing out in: $3s"
 	start=$(date "+%s")
 	$USER_OVERRIDE screen -S   $1 -p 0 -X hardcopy "/tmp/$1.screen"
 	term=$(cat /tmp/$1.screen)
@@ -238,9 +300,13 @@ function waitUntilRgex {
 		term=$(cat /tmp/$1.screen)
 		sleep 1
 		if [ $(( $(date "+%s") - $start )) -ge $3 ]; then
+			log "[$1]: timeout for '$2' was reached"
 			return 1
 		fi
 	done
+	if [ $(( $(date "+%s") - $start )) -lt $3 ]; then
+		log "[$1]: reached target '$2'"
+	fi
 	rm /tmp/$1.screen
 	return 0
 }
@@ -251,14 +317,17 @@ function waitUntilRgex {
 
 function save-on {
 	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "save-on"
+	waitUntilRgex $SCREEN_NAME "^.*(\\[minecraft\\/DedicatedServer\\]: Turned on world auto-saving|\\[minecraft\\/DedicatedServer\\]: Saving is already).*$" 100
 }
 
 function save-off {
 	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "save-off"
+	waitUntilRgex $SCREEN_NAME "^.*(\\[minecraft\\/DedicatedServer\\]: Turned off world auto-saving|\\[minecraft\\/DedicatedServer\\]: Saving is already).*$" 100
 }
 
 function save-all {
 	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "save-all"
+	waitUntilRgex $SCREEN_NAME "^.*(\\[minecraft\\/DedicatedServer\\]: Saved the world).*$" 100
 }
 
 function stop-command {
@@ -435,6 +504,35 @@ function checkAndGrowRamdisk {
 ####################################################################
 
 
+################################# HIGH LEVEL FUNCTIONS #############
+
+function performSave {
+	if crudeLock "save" 100; then
+		if [ "$REPORT_STATUS" == "1" ]; then
+			say "I am $MY_NAME, I'm saving the server"
+		fi
+		if [ "$AUTO_SAVE_MODE" != "RAW" ]; then
+			save-off
+		fi
+		if [ "$AUTO_SAVE_MODE" == "RAW" ] || [ "$AUTO_SAVE_MODE" == "AUTO-FORCE" ]; then
+			save-all
+		fi
+		saveRamdisk $ORIGIN "$WORKING_DIR" $SAVING_METHOD
+		if [ "$AUTO_SAVE_MODE" != "RAW" ]; then
+			save-on
+		fi
+		lastsave="$(timestamp)"
+		if [ "$REPORT_STATUS" == "1" ]; then
+			say "I am $MY_NAME, I have saved the server"
+		fi
+		riseCrudeLock "save"
+	else
+		log "couldn't save, server was busy"
+	fi
+}
+
+####################################################################
+
 #do stuff
 case $1 in
 	demonize)
@@ -442,7 +540,6 @@ case $1 in
 			echo "please set up configuration -h for more information"
 			exit 0
 		fi
-
 		#call the start sequence
 		export DEMONIZED=1
 		$0 start
@@ -456,23 +553,7 @@ case $1 in
 			checkAndGrowRamdisk "$WORKING_DIR" $RAMDSIK_SIZE_MUL $LOWER_MARGINAL_PERCENTAGE $UPPER_FREE_RAM_LIMIT
 
 			if [ $(( $(timestamp) - $lastsave )) -gt $SAVING_INTERVAL ]; then
-				if [ "$REPORT_STATUS" == "1" ]; then
-					say "I am $MY_NAME, I'm saving the server"
-				fi
-				if [ "$AUTO_SAVE_MODE" != "RAW" ]; then
-					save-off
-				fi
-				if [ "$AUTO_SAVE_MODE" == "RAW" ] || [ "$AUTO_SAVE_MODE" == "AUTO-FORCE" ]; then
-					save-all
-				fi
-				saveRamdisk $ORIGIN "$WORKING_DIR" $SAVING_METHOD
-				if [ "$AUTO_SAVE_MODE" != "RAW" ]; then
-					save-on
-				fi
-				lastsave="$(timestamp)"
-				if [ "$REPORT_STATUS" == "1" ]; then
-					say "I am $MY_NAME, I have saved the server"
-				fi
+				performSave
 			fi
 		done
 		if [ -e "$SERVICE_LOG/.stopping" ]; then
@@ -489,7 +570,7 @@ case $1 in
 			exit 0
 		fi
 
-		log "Server Start"
+		log "Server Start --------------------------------------->"
 		if [ ! -z $(isScreen $SCREEN_NAME) ]; then
 			log "$SCREEN_NAME found to be alive, Server may be running?"
 			exit 0
@@ -517,7 +598,7 @@ case $1 in
 		sendCommand $SCREEN_NAME "./run ; exit"
 
 		if [ "$AUTO_SAVE_MODE" == "RAW" ]; then
-			waitUntilRgex $SCREEN_NAME "^.*(\\[minecraft\\/DedicatedServer\\]: Done).*$" 100
+			waitUntilRgex $SCREEN_NAME "^.*(\\[minecraft\\/DedicatedServer\\]: Done).*$" 200
 			save-off
 		fi
 	;;
@@ -535,7 +616,7 @@ case $1 in
 		
 		echo "" > "$SERVICE_LOG/.stopping"
 
-		log "Requested server stop"
+		log "Requested server stop ------------------------------->"
 		
 		save-off
 		
@@ -549,6 +630,14 @@ case $1 in
 		saveRamdisk $ORIGIN $WORKING_DIR $SAVING_METHOD
 
 		umountIfPresent $WORKING_DIR
+	;;
+
+	save)
+		if [ ! -z "$(isScreen $SCREEN_NAME)" ] && [ ! -e "$SERVICE_LOG/.stopping" ]; then
+			performSave
+		else
+			log "server isn't running or stopping, cannot save"
+		fi
 	;;
 
 	about|-h|--help|-help|help|-v|--version|-version)
