@@ -88,7 +88,7 @@ SERVICE_LOG=$ORIGIN.servicelog
 WORKING_DIR=$ORIGIN.rd
 
 #the user that the server will run under
-USER="rafa"
+USER="minecraft"
 
 #0, 1; weather or not the script will report saving and backup procedures to the players, 1 is yes, 0 is no
 REPORT_STATUS=1
