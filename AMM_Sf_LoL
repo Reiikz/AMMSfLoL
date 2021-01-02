@@ -73,7 +73,7 @@ TIMEOUT=30
 
 #time in seconds for which the service will remain sleeping while the server is running
 #this defines how often the service will check if the server is alive and if it needs to add memory
-SLEEP=120
+SLEEP=600
 
 #the name of the screen the server will be run on
 SCREEN_NAME=mainkra_mods
@@ -553,6 +553,7 @@ case $1 in
 			checkAndGrowRamdisk "$WORKING_DIR" $RAMDSIK_SIZE_MUL $LOWER_MARGINAL_PERCENTAGE $UPPER_FREE_RAM_LIMIT
 
 			if [ $(( $(timestamp) - $lastsave )) -gt $SAVING_INTERVAL ]; then
+				lastsave=$(timestamp)
 				performSave
 			fi
 		done
