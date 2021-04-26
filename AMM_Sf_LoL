@@ -317,17 +317,17 @@ function waitUntilRgex {
 
 function save-on {
 	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "save-on"
-	waitUntilRgex $SCREEN_NAME "^.*(\\[minecraft\\/DedicatedServer\\]: Turned on world auto-saving|\\[minecraft\\/DedicatedServer\\]: Saving is already).*$" 100
+	waitUntilRgex $SCREEN_NAME "^.*(\\[Server thread\\/INFO\\]: Automatic saving is now enabled|\\[Server thread\\/INFO\\]: Saving is already turned on).*$" 100
 }
 
 function save-off {
 	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "save-off"
-	waitUntilRgex $SCREEN_NAME "^.*(\\[minecraft\\/DedicatedServer\\]: Turned off world auto-saving|\\[minecraft\\/DedicatedServer\\]: Saving is already).*$" 100
+	waitUntilRgex $SCREEN_NAME "^.*(\\[Server thread\\/INFO\\]: Automatic saving is now disabled|\\[Server thread\\/INFO\\]: Saving is already turned off).*$" 100
 }
 
 function save-all {
 	sendEnter $SCREEN_NAME; sendCommand $SCREEN_NAME "save-all"
-	waitUntilRgex $SCREEN_NAME "^.*(\\[minecraft\\/DedicatedServer\\]: Saved the world).*$" 100
+	waitUntilRgex $SCREEN_NAME "^.*(\\[Server thread\\/INFO\\]: Saved the game).*$" 100
 }
 
 function stop-command {
