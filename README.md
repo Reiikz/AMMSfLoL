@@ -1,3 +1,5 @@
+# Repository moved to https://git.reiikz.net
+
 # AMMSfLoL
 Mounts Minecraft servers in a ramdisk and restarts them when crashed
 
